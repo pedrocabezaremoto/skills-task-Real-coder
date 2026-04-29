@@ -142,7 +142,7 @@ Implement a `GET /health` endpoint that returns HTTP 200 with `{"status": "ok"}`
 - **Path:** `src/main/kotlin/service/AuthorizationService.kt`
 - **Name:** `AuthorizationService.authorize`
 - **Type:** method
-- **Input:** `userId: Long`, `assetOwnerOrgId: Long`, `facilityId: String?` (nullable; `null` for organization-level checks where facility context is not applicable; non-null when authorizing access to a specific facility resource), `operation: String` (e.g. `"read"`, `"write"`)
+- **Input:** `userId: Long`, `assetOwnerOrgId: Long`, `facilityId: String?` (nullable; `null` for organization-level checks where facility context is not applicable; non-null when authorizing access to a specific facility resource), `operation: String` (MUST be exactly `"read"` or `"write"`)
 - **Output:** `Boolean`
 - **Description:** Evaluates authorization for the request. Looks up the user's role in `user_organization_roles` matching `(userId, assetOwnerOrgId)`. `operator_of_record`: full access (read+write) to all assets where `asset_owner_organization_id` matches; `facilityId` is not checked. `contract_operator`: read+write access; if `facilityId` is non-null, returns `true` only when `facilityId` is present in the user's `facility_assignment_scope`. `auditor`: read-only access; returns `true` only when `operation` is `"read"` and, if `facilityId` is non-null, the `facilityId` is present in the user's `facility_assignment_scope`. Returns `false` and logs denial if no matching role entry exists or if scope/operation checks fail. Every decision (allow or deny) MUST be recorded in the `audit_logs` table.
 
@@ -187,8 +187,8 @@ Implement a `GET /health` endpoint that returns HTTP 200 with `{"status": "ok"}`
 - **Path:** `GET /archive/telemetry`
 - **Name:** `getArchiveTelemetry`
 - **Type:** API Endpoint
-- **Input:** Query parameters: `well_id` (String, required), `channel` (String, required), `from` (String, ISO-8601, required), `to` (String, ISO-8601, required), `limit` (Int, optional, default implementation-defined, maximum 1000), `after_id` (Long, optional, keyset pagination cursor); `Authorization` header (HTTP Basic Auth)
-- **Output:** HTTP 200 with JSON Object: `{ "data": [{ "id": Long, "well_id": String, "channel": String, "timestamp": String, "value": Double, ... }], "next_cursor": Long | null }`. Results ordered by `(timestamp ASC, id ASC)`. `next_cursor` is the `id` of the last returned row, or `null` if no more results.
+- **Input:** Query parameters: `well_id` (String, required), `channel` (String, required), `from` (String, ISO-8601, required), `to` (String, ISO-8601, required), `limit` (Int, optional, default 100, maximum 1000), `after_id` (Long, optional, keyset pagination cursor); `Authorization` header (HTTP Basic Auth)
+- **Output:** HTTP 200 with JSON Object: `{ "data": [{ "id": Long, "well_id": String, "channel": String, "timestamp": String, "value": Double, "reported_quality_flag": String, "comm_status": String }], "next_cursor": Long | null }`. Results ordered by `(timestamp ASC, id ASC)`. `next_cursor` is the `id` of the last returned row, or `null` if no more results.
 - **Description:** Returns raw telemetry readings for the specified well and channel within the `[from, to]` time range using keyset pagination. The `telemetry` table MUST have a composite index on `(well_id, channel, timestamp)`. If `after_id` is provided, only rows with `(timestamp, id)` greater than the cursor row are returned. Returns HTTP 400 if required params are missing. Returns HTTP 401/403 for auth failures.
 
 ---
