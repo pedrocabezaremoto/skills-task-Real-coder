@@ -1,0 +1,12 @@
+# Ignorar carpetas temporales y de sistema
+__pycache__/
+.DS_Store
+/tmp/
+.agent/
+
+# Ignorar archivos PDF originales (pesados)
+# Mantenemos los .md resultantes en el repo
+task-1/guia/**/*.pdf
+
+# Ignorar archivos de entorno o secretos si los hubiera
+.env
