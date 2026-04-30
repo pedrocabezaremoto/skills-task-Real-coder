@@ -1,0 +1,14 @@
+[
+  {
+    "name": "com.scada.test.ScadaTests.testFlatlineDetection",
+    "status": "PASSED"
+  },
+  {
+    "name": "com.scada.test.ScadaTests.testAuthAndAuditLogging",
+    "status": "PASSED"
+  },
+  {
+    "name": "com.scada.test.ScadaTests.testKeysetPaginationCursor",
+    "status": "PASSED"
+  }
+]

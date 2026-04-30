@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.scada.ScadaTests" tests="3" skipped="0" failures="3" errors="0" timestamp="2026-04-30T01:00:00" hostname="localhost" time="0.1">
+  <testcase name="testArchiveEndpointMandatoryParams" classname="com.scada.ScadaTests" time="0.03">
+    <failure message="Should fail with 400 when params are missing" type="assertion_error">Expected 400, but got 404</failure>
+  </testcase>
+  <testcase name="testIngestEndpointExists" classname="com.scada.ScadaTests" time="0.03">
+    <failure message="Endpoint not implemented" type="assertion_error">Expected 201, but got 404</failure>
+  </testcase>
+  <testcase name="testAnomalyDetectionAuth" classname="com.scada.ScadaTests" time="0.04">
+    <failure message="Auth not implemented" type="assertion_error">Expected 401, but got 404</failure>
+  </testcase>
+</testsuite>
