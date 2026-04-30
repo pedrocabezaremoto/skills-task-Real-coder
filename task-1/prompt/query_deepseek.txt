@@ -1,0 +1,349 @@
+Eres un experto en QA y en crear prompts deterministas para Ktor (proyecto Real Coder de Outlier).
+El siguiente prompt se ha vuelto demasiado largo, verboso y problemático al intentar arreglar errores de "Logic Integrity" y "Misleading Interface Description".
+Tu tarea:
+1. Analizar el prompt y reescribirlo de forma mucho más concisa y estructurada.
+2. Mantener estrictamente todos los requerimientos funcionales (R01 a R09), incluyendo las tablas de reconciliación (tank_gauge_readings, wellhead_estimates, sales_meter_readings, compressor_logs, fuel_use_logs) y las varianzas especificadas en la sección "Expected Interface" (variance_oil y variance_estimate).
+3. Eliminar la redundancia pero preservar el determinismo exigido por los linters de Outlier.
+
+Aquí está el prompt actual:
+
+# SCADA Data Aggregation and Operations Support Service
+
+## Context
+A small independent oil and gas operator manages 50 wells across a basin and a midstream gathering system connected to multiple sales delivery points. You are a senior backend engineer hired to build a Kotlin backend service that ingests field telemetry, reconciles production allocation, manages alarms, generates regulatory reports, and archives raw data. The service MUST run entirely locally using bundled sample data — no external APIs, no live data downloads.
+
+## Tech Stack
+- **Language:** Kotlin 1.9
+- **Framework:** Ktor 2.3
+- **Database:** SQLite via Exposed ORM 0.44
+- **Build Tool:** Gradle 8.5 (Kotlin DSL)
+- **Runtime:** JVM 17
+- **Serialization:** kotlinx.serialization 1.6
+- **Testing:** JUnit 5
+
+---
+
+## Requirements
+
+**R01 — Telemetry Ingestion & Channel Status**
+Implement a telemetry ingestion module. Each reading MUST include: `well_id` (String), `facility_id` (String), `channel_id` (String, unique per well+channel+transport combination), `timestamp` (ISO-8601 String), `channel` (Enum: `pressure`, `temperature`, `flow`, `gor`), `transport` (Enum: `cellular`, `satellite`, `radio`), `value` (Double), `reported_quality_flag` (Enum: `ok`, `flatline`), and `comm_status` (Enum: `ok`, `timeout`, `poll_error`). Store readings in an append-only `telemetry` table.
+
+The backend MUST maintain a `channel_status` table (keyed by `channel_id`) with the following columns: `signal_condition` (Enum: `ok`, `suspected_flatline`), `connectivity_condition` (Enum: `ok`, `suspected_outage`), `probable_cause` (Enum: `none`, `transport_outage`, `isolated_local_fault`), `expected_cadence_minutes` (Integer), and `last_seen` (ISO-8601 String). This table MUST be updated by a single scheduled background job that runs using server UTC clock and performs both evaluations in sequence on every execution:
+1. Flatline check: query the 5 most recent event-time-ordered readings for each `channel_id`. If all 5 values are identical, set `signal_condition = suspected_flatline`; otherwise set `signal_condition = ok`.
+2. Outage check: a channel is overdue when `current_utc_time - last_seen > 2 * expected_cadence_minutes`. If 3 or more channels sharing the same `facility_id` and `transport` are simultaneously overdue, set their `connectivity_condition = suspected_outage` and `probable_cause = transport_outage`; otherwise set `connectivity_condition = suspected_outage` and `probable_cause = isolated_local_fault`. `last_seen` MUST be updated to the event-time of every ingested reading.
+
+**R02 — Sample Dataset**
+Include a bundled sample dataset generator. This 72-hour dataset is a demo fixture; the schema and append-only retention MUST support indefinite accumulation. The generator MUST populate:
+- Exactly 50 wells mapped to exactly 10 facilities (5 wells per facility).
+- Each well+channel combination MUST have its own `channel_id` entry in `channel_status`. Each well MUST have one primary transport for all its channels: wells 1–20 use `radio` (expected_cadence = 1 min), wells 21–40 use `cellular` (expected_cadence = 15 min), wells 41–50 use `satellite` (expected_cadence = 60 min).
+- Exactly 3 sales delivery points, exactly 1 gathering system.
+- Exactly 10 equipment inventory items each with a `vent_rate_mcf_per_hour` (Double) field.
+- Lease assignments for all 50 wells: wells 1–25 assigned `lease_type = federal`, wells 26–50 assigned `lease_type = state`.
+- Per-facility `gas_composition` records with `methane_fraction` (Double) and `gwp_factor` (Double).
+- Per-equipment `equipment_runtime` records with `vent_hours` (Double) and `runtime_hours` (Double).
+- Exactly 5 production-measurement tables: `tank_gauge_readings` (well_id, date, volume), `wellhead_estimates` (well_id, date, estimated_volume), `sales_meter_readings` (delivery_point_id, date, metered_volume), `compressor_logs` (facility_id, date, recycled_volume), and `fuel_use_logs` (facility_id, date, fuel_volume).
+- Exactly 72 hours of telemetry history and 72 hours of data for all 5 production-measurement tables across all 50 wells.
+- Exactly 30 days of seeded alarm history in the `alarms` table to support chronic alarm rules.
+- Exactly 3 organizations. The seed MUST assign exactly 6 users total: 2 per role. The seed MUST assign user_id=1 to organization_id=1 with role `operator_of_record`, and user_id=2 to organization_id=1 AND organization_id=2 with role `contract_operator` in each, demonstrating multi-organization membership. Other users MUST be assigned a role scoped to a single organization via the `user_organization_roles` table.
+- The generator MUST execute automatically on first startup if the database is empty.
+
+**R03 — Per-Well Production Allocation**
+Implement a production allocation module. For each well, the system MUST compute two distinct variances: `variance_oil` = `net_oil_volume - sales_meter_volume` and `variance_estimate` = `tank_gauge_volume - wellhead_estimate_volume`. The allocation reads `tank_gauge_readings` and `wellhead_estimates`; their average is the `gross_volume`. The allocation MUST subtract `compressor_recycling` volume (from `compressor_logs`) and `onsite_fuel_use` (from `fuel_use_logs`) from gross production to derive `net_oil_volume` (`net_gas_volume` is 0.0 for demo). The `production_allocation` table MUST store: `well_id`, `date`, `gross_volume`, `compressor_recycling`, `fuel_use`, `net_oil_volume` (Double), `net_gas_volume` (Double), `sales_meter_volume`, `variance_oil` (Double), and `variance_estimate` (Double).
+
+**R04 — Operations Dashboard Endpoint**
+Implement a `GET /dashboard/wells/anomalies` endpoint. A well MUST be included in the response if it meets AT LEAST ONE of these conditions:
+1. Pressure trend: 3 consecutive increases > 10% per reading.
+2. GOR shift: Shift > 15% within a 6-hour window.
+Response MUST be a JSON array with fields: `well_id`, `anomaly_type`, `detected_at`, `current_value`, `baseline_value`.
+
+**R05 — Alarm Management**
+Implement an alarm management module. A "chronic alarm" is defined as any alarm triggered 20 or more times in the last 30 days without acknowledgment. The system MUST suppress chronic alarms from the active list. `GET /alarms/active` MUST return only non-suppressed alarms. Store alarms in an `alarms` table with fields: `alarm_id`, `well_id`, `channel`, `triggered_at`, `acknowledged` (Boolean), `suppressed` (Boolean).
+
+**R06 — Regulatory Reporting**
+Implement a `GET /reports/regulatory` endpoint. The database MUST include `equipment`, `facilities`, `leases`, `well_lease_assignments`, `gas_composition`, and `equipment_runtime` tables. Supported `type` parameters:
+- `state_production`: Returns monthly well-level net volumes from `production_allocation.net_oil_volume`.
+- `federal_ghg`: Methane volume MUST be computed as: `net_gas_volume * gas_composition.methane_fraction`. CO2e MUST be computed as: `methane_volume * gas_composition.gwp_factor`. Vented volume MUST be computed as: `equipment_runtime.vent_hours * equipment.vent_rate_mcf_per_hour`. Every response object MUST include a `calculation_basis` field (String) with value: `"Demo estimate derived from measured production and seeded equipment data"`.
+- `blm_lease`: Returns production totals grouped by `lease_type` (`federal`, `state`) using `well_lease_assignments`.
+
+**R07 — Historical Archive**
+Implement a `GET /archive/telemetry` endpoint with keyset pagination. Parameters: `well_id` (String), `channel` (String), `from` (ISO-8601), `to` (ISO-8601), `limit` (Integer, maximum 1000), `after_id` (Long, cursor for keyset pagination). The `telemetry` table MUST have a composite index on `(well_id, channel, timestamp, id)`. The endpoint MUST return results ordered by `(timestamp ASC, id ASC)` and include a `next_cursor` field in the response.
+
+**R08 — Access Control**
+Implement organization-scoped RBAC. The system MUST include:
+- `organizations` table.
+- `user_organization_roles` table with columns: `user_id` (Long), `organization_id` (Long), `role` (Enum: `operator_of_record`, `contract_operator`, `auditor`). This table is the single source of role assignment. One user MUST be assigned to multiple organizations in the seed data.
+- `assets` table linked to `asset_owner_organization_id` and `operating_organization_id`.
+- `users` table with `facility_assignment_scope` (comma-separated list of `facility_id` values).
+- `audit_logs` table recording every access decision.
+- Authorization policy: permissions are evaluated per request using the `user_organization_roles` entry that matches `(authenticated_user_id, asset_owner_organization_id)`. `operator_of_record` MUST have full access to assets where `asset_owner_organization_id` matches. `contract_operator` MUST have read/write access only to facilities in their `facility_assignment_scope`. `auditor` MUST have read-only access over their assigned scope.
+- Authentication MUST use HTTP Basic Auth with BCrypt-hashed passwords.
+- The system MUST enforce per-endpoint authorization using the ownership/assignment rules above.
+
+**R09 — Health Check**
+Implement a `GET /health` endpoint that returns HTTP 200 with `{"status": "ok"}` when service and database are active.
+
+---
+
+## Expected Interface
+
+- **Path:** `src/main/kotlin/model/TelemetryReading.kt`
+- **Name:** `ChannelType`
+- **Type:** `@Serializable` enum class
+- **Input:** None
+- **Output:** Enum values: `pressure`, `temperature`, `flow`, `gor`
+- **Description:** Represents the type of telemetry channel for a well reading. Serialized as its lowercase name string by kotlinx.serialization. Used as the `channel` field of `TelemetryReading`.
+
+---
+
+- **Path:** `src/main/kotlin/model/TelemetryReading.kt`
+- **Name:** `TransportType`
+- **Type:** `@Serializable` enum class
+- **Input:** None
+- **Output:** Enum values: `cellular`, `satellite`, `radio`
+- **Description:** Represents the communication transport method for a telemetry channel. Serialized as its lowercase name string. Used as the `transport` field of `TelemetryReading`.
+
+---
+
+- **Path:** `src/main/kotlin/model/TelemetryReading.kt`
+- **Name:** `QualityFlag`
+- **Type:** `@Serializable` enum class
+- **Input:** None
+- **Output:** Enum values: `ok`, `flatline`
+- **Description:** Indicates the quality status reported by the field device for a telemetry reading. Serialized as its lowercase name string. Used as the `reported_quality_flag` field of `TelemetryReading`.
+
+---
+
+- **Path:** `src/main/kotlin/model/TelemetryReading.kt`
+- **Name:** `CommStatus`
+- **Type:** `@Serializable` enum class
+- **Input:** None
+- **Output:** Enum values: `ok`, `timeout`, `poll_error`
+- **Description:** Indicates the communication status of the SCADA poll that produced a telemetry reading. Serialized as its lowercase name string. Used as the `comm_status` field of `TelemetryReading`.
+
+---
+
+- **Path:** `src/main/kotlin/model/TelemetryReading.kt`
+- **Name:** `TelemetryReading`
+- **Type:** `@Serializable` data class
+- **Input:** Constructor parameters: `well_id` (String), `facility_id` (String), `channel_id` (String), `timestamp` (String, ISO-8601), `channel` (ChannelType), `transport` (TransportType), `value` (Double), `reported_quality_flag` (QualityFlag), `comm_status` (CommStatus)
+- **Output:** N/A (data class — used as parameter to `TelemetryService.ingest` and serialized/deserialized by kotlinx.serialization)
+- **Description:** Immutable data transfer object representing a single SCADA telemetry reading. All fields are mandatory. `channel_id` must be unique per well+channel+transport combination and must already exist in the `channel_status` table. `timestamp` is the event time (ISO-8601) assigned by the field device.
+
+---
+
+- **Path:** `src/main/kotlin/model/ChannelStatus.kt`
+- **Name:** `SignalCondition`
+- **Type:** `@Serializable` enum class
+- **Input:** None
+- **Output:** Enum values: `ok`, `suspected_flatline`
+- **Description:** Represents the signal quality condition for a channel in the `channel_status` table. Set by `ChannelStatusService.evaluate` during the flatline check: `ok` when the 5 most recent readings are not all identical, `suspected_flatline` when they are. Serialized as its lowercase name string.
+
+---
+
+- **Path:** `src/main/kotlin/model/ChannelStatus.kt`
+- **Name:** `ConnectivityCondition`
+- **Type:** `@Serializable` enum class
+- **Input:** None
+- **Output:** Enum values: `ok`, `suspected_outage`
+- **Description:** Represents the connectivity condition for a channel in the `channel_status` table. Set by `ChannelStatusService.evaluate` during the outage check: `suspected_outage` when the channel is overdue (`current_utc_time − last_seen > 2 × expected_cadence_minutes`), `ok` otherwise. Serialized as its lowercase name string.
+
+---
+
+- **Path:** `src/main/kotlin/model/ChannelStatus.kt`
+- **Name:** `ProbableCause`
+- **Type:** `@Serializable` enum class
+- **Input:** None
+- **Output:** Enum values: `none`, `transport_outage`, `isolated_local_fault`
+- **Description:** Represents the probable cause of a channel connectivity issue in the `channel_status` table. Set by `ChannelStatusService.evaluate`: `transport_outage` when ≥3 channels sharing the same `facility_id` and `transport` are simultaneously overdue; `isolated_local_fault` when a channel is overdue but the ≥3 threshold is not met; `none` when the channel is not overdue. Serialized as its lowercase name string.
+
+---
+
+- **Path:** `src/main/kotlin/model/ChannelStatus.kt`
+- **Name:** `ChannelStatus`
+- **Type:** `@Serializable` data class
+- **Input:** Constructor parameters: `channel_id` (String), `well_id` (String), `facility_id` (String), `transport` (TransportType), `signal_condition` (SignalCondition), `connectivity_condition` (ConnectivityCondition), `probable_cause` (ProbableCause), `expected_cadence_minutes` (Int), `last_seen` (String, ISO-8601)
+- **Output:** N/A (data class — returned by `ChannelStatusService.getStatus` and serialized by kotlinx.serialization)
+- **Description:** Immutable data transfer object representing a channel's status record. Keyed by `channel_id` (unique per well+channel+transport combination). `well_id`, `facility_id`, and `transport` are stored to enable the outage-check grouping logic in `ChannelStatusService.evaluate`. `expected_cadence_minutes` is set by `SampleDataGenerator` based on transport type. `last_seen` is updated to the event-time of every ingested reading. Corresponds one-to-one with a row in the `channel_status` table.
+
+---
+
+- **Path:** `src/main/kotlin/model/ProductionAllocation.kt`
+- **Name:** `ProductionAllocation`
+- **Type:** `@Serializable` data class
+- **Input:** Constructor parameters: `well_id` (String), `date` (String, ISO-8601 date e.g. `"2024-01-15"`), `gross_volume` (Double), `compressor_recycling` (Double), `fuel_use` (Double), `net_oil_volume` (Double), `net_gas_volume` (Double), `sales_meter_volume` (Double), `variance_oil` (Double), `variance_estimate` (Double)
+- **Output:** N/A (data class — returned by `ProductionAllocationService.allocate` and serialized by kotlinx.serialization)
+- **Description:** Immutable data transfer object representing a single well's daily production allocation record. `gross_volume` = average of tank gauge volume and wellhead estimate. `net_oil_volume` = `gross_volume − compressor_recycling − fuel_use`. `net_gas_volume` = 0.0 (demo placeholder). `variance_oil` = `net_oil_volume − sales_meter_volume`. `variance_estimate` = `tank_gauge_volume − wellhead_estimate_volume` (the difference between the two raw gross-production input measurements, computed by `ProductionAllocationService.allocate` before they are averaged into `gross_volume`). Corresponds one-to-one with a row in the `production_allocation` table.
+
+---
+
+- **Path:** `src/main/kotlin/model/Alarm.kt`
+- **Name:** `Alarm`
+- **Type:** `@Serializable` data class
+- **Input:** Constructor parameters: `alarm_id` (Long), `well_id` (String), `channel` (String), `triggered_at` (String, ISO-8601), `acknowledged` (Boolean), `suppressed` (Boolean)
+- **Output:** N/A (data class — returned as elements of `List<Alarm>` by `AlarmService.getActiveAlarms` and serialized by kotlinx.serialization)
+- **Description:** Immutable data transfer object representing a single alarm record. When returned by `AlarmService.getActiveAlarms`, `suppressed` is always `false` because chronic alarms have been filtered out. Corresponds one-to-one with a row in the `alarms` table.
+
+---
+
+- **Path:** `src/main/kotlin/model/WellAnomaly.kt`
+- **Name:** `WellAnomaly`
+- **Type:** `@Serializable` data class
+- **Input:** Constructor parameters: `well_id` (String), `anomaly_type` (String, one of `"pressure_trend"` or `"gor_shift"`), `detected_at` (String, ISO-8601), `current_value` (Double), `baseline_value` (Double)
+- **Output:** N/A (data class — returned as elements of `List<WellAnomaly>` by anomaly detection logic and serialized as the JSON array response of `GET /dashboard/wells/anomalies`)
+- **Description:** Immutable data transfer object representing a detected well anomaly. `anomaly_type` is `"pressure_trend"` when 3 consecutive pressure readings each increase >10% over the previous reading (`current_value` is the latest reading, `baseline_value` is the first of the three); `"gor_shift"` when GOR shifts >15% within a 6-hour window (`current_value` is the latest GOR, `baseline_value` is the GOR at the start of the window).
+
+---
+
+- **Path:** `src/main/kotlin/model/UserRole.kt`
+- **Name:** `UserRole`
+- **Type:** `@Serializable` enum class
+- **Input:** None
+- **Output:** Enum values: `operator_of_record`, `contract_operator`, `auditor`
+- **Description:** Represents the role assigned to a user within an organization via the `user_organization_roles` table. `operator_of_record` grants full access to all assets where `asset_owner_organization_id` matches. `contract_operator` grants read/write access scoped to `facility_assignment_scope`. `auditor` grants read-only access scoped to `facility_assignment_scope`. Serialized as its lowercase name string. Used by `AuthorizationService.authorize` and seeded by `SampleDataGenerator.generate`.
+
+---
+
+- **Path:** `src/main/kotlin/Application.kt`
+- **Name:** `Application.module`
+- **Type:** function (Ktor application module)
+- **Input:** None (receiver: `Application`)
+- **Output:** `Unit`
+- **Description:** Ktor application entry point invoked by `./gradlew run`. Configures `ContentNegotiation` (kotlinx.serialization JSON), `Authentication` (HTTP Basic with BCrypt), database initialization (SQLite via Exposed), conditional seed-data generation (delegates to `SampleDataGenerator.generate` if DB is empty), the channel-status background scheduled job, and all route installations. Server MUST bind to `127.0.0.1`.
+
+---
+
+- **Path:** `src/main/kotlin/service/TelemetryService.kt`
+- **Name:** `TelemetryService.ingest`
+- **Type:** method
+- **Input:** `reading: TelemetryReading` — `@Serializable data class` with fields: `well_id` (String), `facility_id` (String), `channel_id` (String), `timestamp` (String, ISO-8601), `channel` (ChannelType enum: `pressure`, `temperature`, `flow`, `gor`), `transport` (TransportType enum: `cellular`, `satellite`, `radio`), `value` (Double), `reported_quality_flag` (QualityFlag enum: `ok`, `flatline`), `comm_status` (CommStatus enum: `ok`, `timeout`, `poll_error`)
+- **Output:** `Unit`
+- **Description:** Inserts a single telemetry reading into the append-only `telemetry` table. Updates `channel_status.last_seen` for the matching `channel_id` to the reading's event `timestamp`. Throws `IllegalArgumentException` if the `channel_id` is unknown.
+
+---
+
+- **Path:** `src/main/kotlin/service/ChannelStatusService.kt`
+- **Name:** `ChannelStatusService.evaluate`
+- **Type:** method
+- **Input:** `currentUtcTime: java.time.Instant`
+- **Output:** `Unit`
+- **Description:** Executes both channel-status evaluations in sequence on every invocation. (1) Flatline check: for each `channel_id`, queries the 5 most recent event-time-ordered readings; if all 5 `value` fields are identical, sets `signal_condition = suspected_flatline`, otherwise `signal_condition = ok`. (2) Outage check: a channel is overdue when `currentUtcTime − last_seen > 2 × expected_cadence_minutes`. If ≥3 channels sharing the same `facility_id` AND `transport` are simultaneously overdue, sets their `connectivity_condition = suspected_outage` and `probable_cause = transport_outage`; otherwise sets `connectivity_condition = suspected_outage` and `probable_cause = isolated_local_fault`. Channels that are not overdue have `connectivity_condition = ok` and `probable_cause = none`.
+
+---
+
+- **Path:** `src/main/kotlin/service/ChannelStatusService.kt`
+- **Name:** `ChannelStatusService.getStatus`
+- **Type:** method
+- **Input:** `channelId: String`
+- **Output:** `ChannelStatus?` — nullable `@Serializable data class` with fields: `channel_id` (String), `well_id` (String), `facility_id` (String), `transport` (TransportType), `signal_condition` (SignalCondition), `connectivity_condition` (ConnectivityCondition), `probable_cause` (ProbableCause), `expected_cadence_minutes` (Int), `last_seen` (String, ISO-8601). Returns `null` if `channelId` does not exist.
+- **Description:** Returns the current status record for the given `channel_id` from the `channel_status` table, or `null` if the channel does not exist. Enables programmatic verification of `evaluate()` side effects by tests and internal service consumers.
+
+---
+
+- **Path:** `src/main/kotlin/service/SampleDataGenerator.kt`
+- **Name:** `SampleDataGenerator.generate`
+- **Type:** method
+- **Input:** None
+- **Output:** `Unit`
+- **Description:** Populates the entire SQLite database with deterministic sample data. MUST create: exactly 50 wells mapped to exactly 10 facilities (5 per facility); a `channel_status` entry per well+channel combination with transport-based cadence (wells 1–20 radio/1 min, 21–40 cellular/15 min, 41–50 satellite/60 min); exactly 3 sales delivery points; exactly 1 gathering system; exactly 10 equipment inventory items each with `vent_rate_mcf_per_hour`; lease assignments (wells 1–25 federal, 26–50 state); per-facility `gas_composition` records (`methane_fraction`, `gwp_factor`); per-equipment `equipment_runtime` records (`vent_hours`, `runtime_hours`); 72 hours of telemetry history; 30 days of seeded alarm history; exactly 3 organizations; exactly 6 users (2 per role); `user_organization_roles` entries including user_id=1→org 1 as operator_of_record and user_id=2→org 1 & org 2 as contract_operator. Seeds all 5 production-measurement tables (`tank_gauge_readings`, `wellhead_estimates`, `sales_meter_readings`, `compressor_logs`, `fuel_use_logs`) with deterministic demo data for 72 hours across all 50 wells. Executes automatically on first startup only when the database is empty.
+
+---
+
+- **Path:** `src/main/kotlin/service/ProductionAllocationService.kt`
+- **Name:** `ProductionAllocationService.allocate`
+- **Type:** method
+- **Input:** `wellId: String`, `date: String` (ISO-8601 date, e.g. `"2024-01-15"`)
+- **Output:** `ProductionAllocation` — `@Serializable data class` with fields: `well_id` (String), `date` (String), `gross_volume` (Double), `compressor_recycling` (Double), `fuel_use` (Double), `net_oil_volume` (Double), `net_gas_volume` (Double), `sales_meter_volume` (Double), `variance_oil` (Double), `variance_estimate` (Double)
+- **Description:** Computes production allocation for a single well on a given date. Reads the well's `tank_gauge_readings` volume and `wellhead_estimates` estimated_volume for the date. `gross_volume` = average of the two. Reads `compressor_logs.recycled_volume` and `fuel_use_logs.fuel_volume` for the well's facility on the date. `net_oil_volume` = `gross_volume − compressor_recycling − fuel_use`. `net_gas_volume` = 0.0 (demo). `sales_meter_volume` = attributed sales reading from `sales_meter_readings`. `variance_oil` = `net_oil_volume − sales_meter_volume`. `variance_estimate` = `tank_gauge_volume − wellhead_estimate_volume`. Stores the result in the `production_allocation` table and returns the record.
+
+---
+
+- **Path:** `src/main/kotlin/service/AlarmService.kt`
+- **Name:** `AlarmService.suppressChronicAlarms`
+- **Type:** method
+- **Input:** None
+- **Output:** `Int` (count of alarms suppressed)
+- **Description:** Scans the `alarms` table for chronic alarms: any `(well_id, channel)` combination triggered ≥20 times in the last 30 days where `acknowledged = false`. Sets `suppressed = true` on all matching alarm rows. Returns the number of rows updated.
+
+---
+
+- **Path:** `src/main/kotlin/service/AlarmService.kt`
+- **Name:** `AlarmService.getActiveAlarms`
+- **Type:** method
+- **Input:** `userId: Long`
+- **Output:** `List<Alarm>` — each element: `alarm_id` (Long), `well_id` (String), `channel` (String), `triggered_at` (String, ISO-8601), `acknowledged` (Boolean), `suppressed` (Boolean, always `false` in returned list)
+- **Description:** Returns all alarms where `suppressed = false` within the authenticated user's authorized asset scope (determined via `AuthorizationService.getAuthorizedFacilityIds`). Chronic suppression MUST have been applied before this query.
+
+---
+
+- **Path:** `src/main/kotlin/service/AuthorizationService.kt`
+- **Name:** `AuthorizationService.authorize`
+- **Type:** method
+- **Input:** `userId: Long`, `assetOwnerOrgId: Long`, `facilityId: String?` (nullable; `null` for organization-level checks where facility context is not applicable; non-null when authorizing access to a specific facility resource), `operation: String` (MUST be exactly `"read"` or `"write"`)
+- **Output:** `Boolean`
+- **Description:** Evaluates authorization for the request. Looks up the user's role in `user_organization_roles` matching `(userId, assetOwnerOrgId)`. `operator_of_record`: full access (read+write) to all assets where `asset_owner_organization_id` matches; `facilityId` is not checked. `contract_operator`: read+write access; if `facilityId` is non-null, returns `true` only when `facilityId` is present in the user's `facility_assignment_scope`. `auditor`: read-only access; returns `true` only when `operation` is `"read"` and, if `facilityId` is non-null, the `facilityId` is present in the user's `facility_assignment_scope`. Returns `false` and logs denial if no matching role entry exists or if scope/operation checks fail. Every decision (allow or deny) MUST be recorded in the `audit_logs` table.
+
+---
+
+- **Path:** `src/main/kotlin/service/AuthorizationService.kt`
+- **Name:** `AuthorizationService.getAuthorizedFacilityIds`
+- **Type:** method
+- **Input:** `userId: Long`
+- **Output:** `List<String>` — deduplicated list of `facility_id` values the user is authorized to access
+- **Description:** Aggregates the authenticated user's authorized facility scope across all their `user_organization_roles` entries. For each role entry: if the role is `operator_of_record`, includes all `facility_id` values from the `assets` table where `asset_owner_organization_id` matches the entry's `organization_id`; if the role is `contract_operator` or `auditor`, includes the `facility_id` values parsed from the user's `facility_assignment_scope` (comma-separated). Returns the deduplicated union of all collected facility IDs. Used exclusively by the following query-scoped endpoints and service methods: `AlarmService.getActiveAlarms`, `GET /dashboard/wells/anomalies`, `GET /reports/regulatory`, and `GET /archive/telemetry` to filter results to only the user's authorized data.
+
+---
+
+- **Path:** `POST /telemetry`
+- **Name:** `postTelemetry`
+- **Type:** API Endpoint
+- **Input:** JSON request body: `TelemetryReading` object with fields `well_id` (String), `facility_id` (String), `channel_id` (String), `timestamp` (String, ISO-8601), `channel` (ChannelType), `transport` (TransportType), `value` (Double), `reported_quality_flag` (QualityFlag), `comm_status` (CommStatus); `Authorization` header (HTTP Basic Auth: `Basic base64(username:password)`)
+- **Output:** HTTP 201 with empty body on success
+- **Description:** Accepts a single telemetry reading and delegates to `TelemetryService.ingest`. The reading is inserted into the append-only `telemetry` table and `channel_status.last_seen` is updated. Returns HTTP 400 if the request body is malformed or `channel_id` is unknown (maps `IllegalArgumentException`). Returns HTTP 401 if credentials are invalid, HTTP 403 if the authenticated user is not authorized for the target asset.
+
+---
+
+- **Path:** `GET /dashboard/wells/anomalies`
+- **Name:** `getWellAnomalies`
+- **Type:** API Endpoint
+- **Input:** `Authorization` header (HTTP Basic Auth: `Basic base64(username:password)`)
+- **Output:** HTTP 200 with JSON Array of `WellAnomaly` objects, each containing: `well_id` (String), `anomaly_type` (String, one of `"pressure_trend"` or `"gor_shift"`), `detected_at` (String, ISO-8601), `current_value` (Double), `baseline_value` (Double)
+- **Description:** Returns all wells with at least one active anomaly, scoped to the authenticated user's authorized assets. A well is included if it meets at least one condition: (1) Pressure trend — 3 consecutive pressure readings each >10% higher than the previous reading; `current_value` is the latest reading, `baseline_value` is the first of the three. (2) GOR shift — GOR value shifted >15% within any 6-hour window; `current_value` is the latest GOR, `baseline_value` is the GOR at the start of the window. Returns HTTP 401 if credentials are invalid, HTTP 403 if unauthorized.
+
+---
+
+- **Path:** `GET /alarms/active`
+- **Name:** `getActiveAlarms`
+- **Type:** API Endpoint
+- **Input:** `Authorization` header (HTTP Basic Auth: `Basic base64(username:password)`)
+- **Output:** HTTP 200 with JSON Array of objects, each containing: `alarm_id` (Long), `well_id` (String), `channel` (String), `triggered_at` (String, ISO-8601), `acknowledged` (Boolean), `suppressed` (Boolean, always `false`)
+- **Description:** Returns all active, non-suppressed alarms scoped to the authenticated user's authorized assets. Chronic alarms (same `well_id`+`channel` triggered ≥20 times in the last 30 days without acknowledgment) MUST be suppressed and excluded from the response. Returns HTTP 401 if credentials are invalid, HTTP 403 if unauthorized.
+
+---
+
+- **Path:** `GET /reports/regulatory`
+- **Name:** `getRegulatoryReport`
+- **Type:** API Endpoint
+- **Input:** Query parameter `type` (String, required, one of: `"state_production"`, `"federal_ghg"`, `"blm_lease"`), `Authorization` header (HTTP Basic Auth)
+- **Output:** HTTP 200 with JSON Object. Structure varies by `type`: (1) `state_production` — `{ "report_type": "state_production", "records": [{ "well_id": String, "month": String, "net_oil_volume": Double }] }`. (2) `federal_ghg` — `{ "report_type": "federal_ghg", "calculation_basis": "Demo estimate derived from measured production and seeded equipment data", "records": [{ "facility_id": String, "methane_volume": Double, "co2e": Double, "vented_volume": Double }] }` where `methane_volume = net_gas_volume × gas_composition.methane_fraction`, `co2e = methane_volume × gas_composition.gwp_factor`, `vented_volume = equipment_runtime.vent_hours × equipment.vent_rate_mcf_per_hour`. (3) `blm_lease` — `{ "report_type": "blm_lease", "records": [{ "lease_type": String, "total_oil_volume": Double, "total_gas_volume": Double }] }` grouped by `lease_type` (`federal`, `state`) via `well_lease_assignments`.
+- **Description:** Generates regulatory reports using data from `production_allocation`, `gas_composition`, `equipment`, `equipment_runtime`, `leases`, and `well_lease_assignments` tables. Returns HTTP 400 if `type` is missing or invalid. Returns HTTP 401/403 for auth failures. Scoped to authenticated user's authorized assets.
+
+---
+
+- **Path:** `GET /archive/telemetry`
+- **Name:** `getArchiveTelemetry`
+- **Type:** API Endpoint
+- **Input:** Query parameters: `well_id` (String, required), `channel` (String, required), `from` (String, ISO-8601, required), `to` (String, ISO-8601, required), `limit` (Int, optional, default 100, maximum 1000), `after_id` (Long, optional, keyset pagination cursor); `Authorization` header (HTTP Basic Auth)
+- **Output:** HTTP 200 with JSON Object: `{ "data": [{ "id": Long, "well_id": String, "channel": String, "timestamp": String, "value": Double, "reported_quality_flag": String, "comm_status": String }], "next_cursor": Long | null }`. Results ordered by `(timestamp ASC, id ASC)`. `next_cursor` is the `id` of the last returned row, or `null` if no more results.
+- **Description:** Returns raw telemetry readings for the specified well and channel within the `[from, to]` time range using keyset pagination. The `telemetry` table MUST have a composite index on `(well_id, channel, timestamp, id)`. If `after_id` is provided, only rows with `(timestamp, id)` greater than the cursor row are returned. Returns HTTP 400 if required params are missing. Returns HTTP 401/403 for auth failures.
+
+---
+
+- **Path:** `GET /health`
+- **Name:** `healthCheck`
+- **Type:** API Endpoint
+- **Input:** None
+- **Output:** HTTP 200 with JSON Object: `{ "status": "ok" }`
+- **Description:** Returns HTTP 200 with body `{"status": "ok"}` when the Ktor service is running and the SQLite database connection is responsive. No authentication required.
+
+## Current State
+This is a greenfield project. No existing codebase. The solution MUST compile and run with `./gradlew run`. The Ktor server MUST bind exclusively to `127.0.0.1` (localhost). The system MUST NOT use networking client libraries (e.g., Ktor Client, Retrofit, OkHttp) or raw sockets for outbound connections; all data dependencies MUST be bundled on disk as local sample data. The sample data generator MUST execute automatically on first run if the SQLite database is empty.

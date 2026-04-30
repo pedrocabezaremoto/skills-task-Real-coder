@@ -76,6 +76,123 @@ Implement a `GET /health` endpoint that returns HTTP 200 with `{"status": "ok"}`
 
 ## Expected Interface
 
+- **Path:** `src/main/kotlin/model/TelemetryReading.kt`
+- **Name:** `ChannelType`
+- **Type:** `@Serializable` enum class
+- **Input:** None
+- **Output:** Enum values: `pressure`, `temperature`, `flow`, `gor`
+- **Description:** Represents the type of telemetry channel for a well reading. Serialized as its lowercase name string by kotlinx.serialization. Used as the `channel` field of `TelemetryReading`.
+
+---
+
+- **Path:** `src/main/kotlin/model/TelemetryReading.kt`
+- **Name:** `TransportType`
+- **Type:** `@Serializable` enum class
+- **Input:** None
+- **Output:** Enum values: `cellular`, `satellite`, `radio`
+- **Description:** Represents the communication transport method for a telemetry channel. Serialized as its lowercase name string. Used as the `transport` field of `TelemetryReading`.
+
+---
+
+- **Path:** `src/main/kotlin/model/TelemetryReading.kt`
+- **Name:** `QualityFlag`
+- **Type:** `@Serializable` enum class
+- **Input:** None
+- **Output:** Enum values: `ok`, `flatline`
+- **Description:** Indicates the quality status reported by the field device for a telemetry reading. Serialized as its lowercase name string. Used as the `reported_quality_flag` field of `TelemetryReading`.
+
+---
+
+- **Path:** `src/main/kotlin/model/TelemetryReading.kt`
+- **Name:** `CommStatus`
+- **Type:** `@Serializable` enum class
+- **Input:** None
+- **Output:** Enum values: `ok`, `timeout`, `poll_error`
+- **Description:** Indicates the communication status of the SCADA poll that produced a telemetry reading. Serialized as its lowercase name string. Used as the `comm_status` field of `TelemetryReading`.
+
+---
+
+- **Path:** `src/main/kotlin/model/TelemetryReading.kt`
+- **Name:** `TelemetryReading`
+- **Type:** `@Serializable` data class
+- **Input:** Constructor parameters: `well_id` (String), `facility_id` (String), `channel_id` (String), `timestamp` (String, ISO-8601), `channel` (ChannelType), `transport` (TransportType), `value` (Double), `reported_quality_flag` (QualityFlag), `comm_status` (CommStatus)
+- **Output:** N/A (data class — used as parameter to `TelemetryService.ingest` and serialized/deserialized by kotlinx.serialization)
+- **Description:** Immutable data transfer object representing a single SCADA telemetry reading. All fields are mandatory. `channel_id` must be unique per well+channel+transport combination and must already exist in the `channel_status` table. `timestamp` is the event time (ISO-8601) assigned by the field device.
+
+---
+
+- **Path:** `src/main/kotlin/model/ChannelStatus.kt`
+- **Name:** `SignalCondition`
+- **Type:** `@Serializable` enum class
+- **Input:** None
+- **Output:** Enum values: `ok`, `suspected_flatline`
+- **Description:** Represents the signal quality condition for a channel in the `channel_status` table. Set by `ChannelStatusService.evaluate` during the flatline check: `ok` when the 5 most recent readings are not all identical, `suspected_flatline` when they are. Serialized as its lowercase name string.
+
+---
+
+- **Path:** `src/main/kotlin/model/ChannelStatus.kt`
+- **Name:** `ConnectivityCondition`
+- **Type:** `@Serializable` enum class
+- **Input:** None
+- **Output:** Enum values: `ok`, `suspected_outage`
+- **Description:** Represents the connectivity condition for a channel in the `channel_status` table. Set by `ChannelStatusService.evaluate` during the outage check: `suspected_outage` when the channel is overdue (`current_utc_time − last_seen > 2 × expected_cadence_minutes`), `ok` otherwise. Serialized as its lowercase name string.
+
+---
+
+- **Path:** `src/main/kotlin/model/ChannelStatus.kt`
+- **Name:** `ProbableCause`
+- **Type:** `@Serializable` enum class
+- **Input:** None
+- **Output:** Enum values: `none`, `transport_outage`, `isolated_local_fault`
+- **Description:** Represents the probable cause of a channel connectivity issue in the `channel_status` table. Set by `ChannelStatusService.evaluate`: `transport_outage` when ≥3 channels sharing the same `facility_id` and `transport` are simultaneously overdue; `isolated_local_fault` when a channel is overdue but the ≥3 threshold is not met; `none` when the channel is not overdue. Serialized as its lowercase name string.
+
+---
+
+- **Path:** `src/main/kotlin/model/ChannelStatus.kt`
+- **Name:** `ChannelStatus`
+- **Type:** `@Serializable` data class
+- **Input:** Constructor parameters: `channel_id` (String), `well_id` (String), `facility_id` (String), `transport` (TransportType), `signal_condition` (SignalCondition), `connectivity_condition` (ConnectivityCondition), `probable_cause` (ProbableCause), `expected_cadence_minutes` (Int), `last_seen` (String, ISO-8601)
+- **Output:** N/A (data class — returned by `ChannelStatusService.getStatus` and serialized by kotlinx.serialization)
+- **Description:** Immutable data transfer object representing a channel's status record. Keyed by `channel_id` (unique per well+channel+transport combination). `well_id`, `facility_id`, and `transport` are stored to enable the outage-check grouping logic in `ChannelStatusService.evaluate`. `expected_cadence_minutes` is set by `SampleDataGenerator` based on transport type. `last_seen` is updated to the event-time of every ingested reading. Corresponds one-to-one with a row in the `channel_status` table.
+
+---
+
+- **Path:** `src/main/kotlin/model/ProductionAllocation.kt`
+- **Name:** `ProductionAllocation`
+- **Type:** `@Serializable` data class
+- **Input:** Constructor parameters: `well_id` (String), `date` (String, ISO-8601 date e.g. `"2024-01-15"`), `gross_volume` (Double), `compressor_recycling` (Double), `fuel_use` (Double), `net_oil_volume` (Double), `net_gas_volume` (Double), `sales_meter_volume` (Double), `variance` (Double)
+- **Output:** N/A (data class — returned by `ProductionAllocationService.allocate` and serialized by kotlinx.serialization)
+- **Description:** Immutable data transfer object representing a single well's daily production allocation record. `variance` equals `net_oil_volume + net_gas_volume − sales_meter_volume`. Corresponds one-to-one with a row in the `production_allocation` table.
+
+---
+
+- **Path:** `src/main/kotlin/model/Alarm.kt`
+- **Name:** `Alarm`
+- **Type:** `@Serializable` data class
+- **Input:** Constructor parameters: `alarm_id` (Long), `well_id` (String), `channel` (String), `triggered_at` (String, ISO-8601), `acknowledged` (Boolean), `suppressed` (Boolean)
+- **Output:** N/A (data class — returned as elements of `List<Alarm>` by `AlarmService.getActiveAlarms` and serialized by kotlinx.serialization)
+- **Description:** Immutable data transfer object representing a single alarm record. When returned by `AlarmService.getActiveAlarms`, `suppressed` is always `false` because chronic alarms have been filtered out. Corresponds one-to-one with a row in the `alarms` table.
+
+---
+
+- **Path:** `src/main/kotlin/model/WellAnomaly.kt`
+- **Name:** `WellAnomaly`
+- **Type:** `@Serializable` data class
+- **Input:** Constructor parameters: `well_id` (String), `anomaly_type` (String, one of `"pressure_trend"` or `"gor_shift"`), `detected_at` (String, ISO-8601), `current_value` (Double), `baseline_value` (Double)
+- **Output:** N/A (data class — returned as elements of `List<WellAnomaly>` by anomaly detection logic and serialized as the JSON array response of `GET /dashboard/wells/anomalies`)
+- **Description:** Immutable data transfer object representing a detected well anomaly. `anomaly_type` is `"pressure_trend"` when 3 consecutive pressure readings each increase >10% over the previous reading (`current_value` is the latest reading, `baseline_value` is the first of the three); `"gor_shift"` when GOR shifts >15% within a 6-hour window (`current_value` is the latest GOR, `baseline_value` is the GOR at the start of the window).
+
+---
+
+- **Path:** `src/main/kotlin/model/UserRole.kt`
+- **Name:** `UserRole`
+- **Type:** `@Serializable` enum class
+- **Input:** None
+- **Output:** Enum values: `operator_of_record`, `contract_operator`, `auditor`
+- **Description:** Represents the role assigned to a user within an organization via the `user_organization_roles` table. `operator_of_record` grants full access to all assets where `asset_owner_organization_id` matches. `contract_operator` grants read/write access scoped to `facility_assignment_scope`. `auditor` grants read-only access scoped to `facility_assignment_scope`. Serialized as its lowercase name string. Used by `AuthorizationService.authorize` and seeded by `SampleDataGenerator.generate`.
+
+---
+
 - **Path:** `src/main/kotlin/Application.kt`
 - **Name:** `Application.module`
 - **Type:** function (Ktor application module)
@@ -100,6 +217,15 @@ Implement a `GET /health` endpoint that returns HTTP 200 with `{"status": "ok"}`
 - **Input:** `currentUtcTime: java.time.Instant`
 - **Output:** `Unit`
 - **Description:** Executes both channel-status evaluations in sequence on every invocation. (1) Flatline check: for each `channel_id`, queries the 5 most recent event-time-ordered readings; if all 5 `value` fields are identical, sets `signal_condition = suspected_flatline`, otherwise `signal_condition = ok`. (2) Outage check: a channel is overdue when `currentUtcTime − last_seen > 2 × expected_cadence_minutes`. If ≥3 channels sharing the same `facility_id` AND `transport` are simultaneously overdue, sets their `connectivity_condition = suspected_outage` and `probable_cause = transport_outage`; otherwise sets `connectivity_condition = suspected_outage` and `probable_cause = isolated_local_fault`. Channels that are not overdue have `connectivity_condition = ok` and `probable_cause = none`.
+
+---
+
+- **Path:** `src/main/kotlin/service/ChannelStatusService.kt`
+- **Name:** `ChannelStatusService.getStatus`
+- **Type:** method
+- **Input:** `channelId: String`
+- **Output:** `ChannelStatus?` — nullable `@Serializable data class` with fields: `channel_id` (String), `well_id` (String), `facility_id` (String), `transport` (TransportType), `signal_condition` (SignalCondition), `connectivity_condition` (ConnectivityCondition), `probable_cause` (ProbableCause), `expected_cadence_minutes` (Int), `last_seen` (String, ISO-8601). Returns `null` if `channelId` does not exist.
+- **Description:** Returns the current status record for the given `channel_id` from the `channel_status` table, or `null` if the channel does not exist. Enables programmatic verification of `evaluate()` side effects by tests and internal service consumers.
 
 ---
 
@@ -157,11 +283,20 @@ Implement a `GET /health` endpoint that returns HTTP 200 with `{"status": "ok"}`
 
 ---
 
+- **Path:** `POST /telemetry`
+- **Name:** `postTelemetry`
+- **Type:** API Endpoint
+- **Input:** JSON request body: `TelemetryReading` object with fields `well_id` (String), `facility_id` (String), `channel_id` (String), `timestamp` (String, ISO-8601), `channel` (ChannelType), `transport` (TransportType), `value` (Double), `reported_quality_flag` (QualityFlag), `comm_status` (CommStatus); `Authorization` header (HTTP Basic Auth: `Basic base64(username:password)`)
+- **Output:** HTTP 201 with empty body on success
+- **Description:** Accepts a single telemetry reading and delegates to `TelemetryService.ingest`. The reading is inserted into the append-only `telemetry` table and `channel_status.last_seen` is updated. Returns HTTP 400 if the request body is malformed or `channel_id` is unknown (maps `IllegalArgumentException`). Returns HTTP 401 if credentials are invalid, HTTP 403 if the authenticated user is not authorized for the target asset.
+
+---
+
 - **Path:** `GET /dashboard/wells/anomalies`
 - **Name:** `getWellAnomalies`
 - **Type:** API Endpoint
 - **Input:** `Authorization` header (HTTP Basic Auth: `Basic base64(username:password)`)
-- **Output:** HTTP 200 with JSON Array of objects, each containing: `well_id` (String), `anomaly_type` (String, one of `"pressure_trend"` or `"gor_shift"`), `detected_at` (String, ISO-8601), `current_value` (Double), `baseline_value` (Double)
+- **Output:** HTTP 200 with JSON Array of `WellAnomaly` objects, each containing: `well_id` (String), `anomaly_type` (String, one of `"pressure_trend"` or `"gor_shift"`), `detected_at` (String, ISO-8601), `current_value` (Double), `baseline_value` (Double)
 - **Description:** Returns all wells with at least one active anomaly, scoped to the authenticated user's authorized assets. A well is included if it meets at least one condition: (1) Pressure trend — 3 consecutive pressure readings each >10% higher than the previous reading; `current_value` is the latest reading, `baseline_value` is the first of the three. (2) GOR shift — GOR value shifted >15% within any 6-hour window; `current_value` is the latest GOR, `baseline_value` is the GOR at the start of the window. Returns HTTP 401 if credentials are invalid, HTTP 403 if unauthorized.
 
 ---
@@ -199,8 +334,6 @@ Implement a `GET /health` endpoint that returns HTTP 200 with `{"status": "ok"}`
 - **Input:** None
 - **Output:** HTTP 200 with JSON Object: `{ "status": "ok" }`
 - **Description:** Returns HTTP 200 with body `{"status": "ok"}` when the Ktor service is running and the SQLite database connection is responsive. No authentication required.
-
----
 
 ## Current State
 This is a greenfield project. No existing codebase. The solution MUST compile and run with `./gradlew run`. The Ktor server MUST bind exclusively to `127.0.0.1` (localhost). The system MUST NOT use networking client libraries or raw sockets for outbound connections. All data dependencies MUST be bundled on disk. The sample data generator MUST execute automatically on first run if the SQLite database is empty.
