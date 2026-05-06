@@ -1,6 +1,8 @@
 # Índice de Guías — Real Coder (Outlier) | Task 1
 
-> Generado: 2026-04-29 | 10 guías descargadas de Google Drive
+> Este índice es el punto de entrada. Si eres un agente nuevo, empieza aquí.
+
+> Generado: 2026-05-06 | 10 guías descargadas de Google Drive
 
 ---
 
