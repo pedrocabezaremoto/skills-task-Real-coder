@@ -98,19 +98,41 @@ Proyecto de tipo **Frontend Development** para crear un sistema de gestión de s
 
 ---
 
+## Bucle de Corrección Outlier — Intento #1 🔄
+
+### Feedback recibido (REBOTADO ❌)
+- **Determinismo:** "at least" (unbounded) y "or" en componentes visuales
+- **Fidelidad Seed:** Faltaban paquetes, contactInfo, tipos de evento, redondeo 1 decimal
+- **Lógica:** Faltaban fórmulas financieras y mecanismo de flagging
+
+### Correcciones aplicadas a `Prompts/prompt.md`:
+| Corrección | Detalle |
+|-----------|---------|
+| "at least" → "exactly" | Sample data ahora usa "exactly 5 inquiries" |
+| UI sin opciones | SalesDashboard: **Kanban board**, OwnerDashboard: **Bar chart** |
+| Tipos de evento | ceremony, cocktail hour, dinner, first dance, cake cutting |
+| Paquetes de contrato | ceremony, reception, all-inclusive (sin "or") |
+| contactInfo en Vendors | Vendors incluyen phone y email |
+| Redondeo 1 decimal | Conversion Rate, Profit Margin, YoY Growth, Vendor Rating Average |
+| Revenue formula | `venueFee + additionalServices` |
+| Profit formula | `(revenue - operatingCosts) / revenue * 100` |
+| Overdue dinámico | `generatePaymentSchedule` acepta `currentDate` como parámetro |
+| operatingCosts / additionalServices | Añadidos a tipos y sample data |
+
 ## Estado Actual
 
 ```
 FASE 0: Entender seed task        ✅ COMPLETADA
 FASE 1: Escribir prompt.md        ✅ COMPLETADA  
 FASE 2: Auditar prompt            ✅ COMPLETADA
-FASE 3: Escribir tests F2P        ⏳ PENDIENTE (esperando aprobación en Outlier)
+🔁 BUCLE OUTLIER #1               ✅ CORREGIDO (listo para re-subir)
+FASE 3: Escribir tests F2P        ⏳ PENDIENTE (esperando re-aprobación en Outlier)
 FASE 4: Crear rúbricas            ⏳ PENDIENTE
 FASE 5: Golden Patch + Verificación ⏳ PENDIENTE
 ```
 
 ### Próximo paso:
-Una vez aprobado el prompt en Outlier, continuar con **FASE 3** — creación de los tests unitarios F2P (Fail-to-Pass) usando Vitest, cubriendo toda la lógica de negocio del archivo `src/utils/calculations.ts`.
+Re-subir `Prompts/prompt.md` a Outlier. Una vez aprobado, continuar con **FASE 3** — tests F2P con Vitest.
 
 ---
 
@@ -121,7 +143,8 @@ task-2/
 ├── Prompts/
 │   └── prompt.md              ← Rewritten prompt (listo para Outlier)
 ├── Historial/
-│   └── reporte.md             ← Este archivo
+│   ├── reporte.md             ← Registro histórico de fases
+│   └── correcciones_outlier.md ← Bucle de comunicación Antigravity <-> Opencode
 ├── checkers-auditoria/        ← Templates de auditoría
 │   ├── prompt-creation-protocol.md
 │   ├── promptchecker.md
